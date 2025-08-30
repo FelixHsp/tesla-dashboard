@@ -231,12 +231,23 @@ export default function TripMap({ positions }: TripMapProps) {
       <div className="relative w-full h-full group">
         <div ref={mapRef} className="w-full h-full rounded-lg overflow-hidden" />
         
+        {/* 点击遮罩 - 避开按钮区域 */}
+        <div 
+          className="absolute inset-0 cursor-pointer"
+          style={{ right: '100px' }} // 避开按钮区域
+          onClick={openFullscreen}
+          title="点击放大地图"
+        />
+        
         {/* 刷新按钮 */}
         <Button
           variant="secondary"
           size="sm"
-          className="absolute top-2 right-12 opacity-0 group-hover:opacity-100 transition-opacity"
-          onClick={refreshMap}
+          className="absolute top-2 right-12 opacity-0 group-hover:opacity-100 transition-opacity z-10"
+          onClick={(e) => {
+            e.stopPropagation() // 阻止事件冒泡
+            refreshMap()
+          }}
           title="刷新地图"
         >
           <RefreshCw className="h-4 w-4" />
@@ -246,18 +257,15 @@ export default function TripMap({ positions }: TripMapProps) {
         <Button
           variant="secondary"
           size="sm"
-          className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"
-          onClick={openFullscreen}
+          className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity z-10"
+          onClick={(e) => {
+            e.stopPropagation() // 阻止事件冒泡
+            openFullscreen()
+          }}
+          title="放大地图"
         >
           <Maximize2 className="h-4 w-4" />
         </Button>
-        
-        {/* 点击遮罩 */}
-        <div 
-          className="absolute inset-0 cursor-pointer"
-          onClick={openFullscreen}
-          title="点击放大地图"
-        />
       </div>
 
       {/* 全屏模态 */}

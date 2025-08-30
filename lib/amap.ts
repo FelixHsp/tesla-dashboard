@@ -34,6 +34,11 @@ import { wgs84ToGcj02 } from './coordinate-transform'
 // 缓存已查询的地址，避免重复API调用
 const addressCache = new Map<string, string>()
 
+// 坐标精度处理：保留3位小数（约100米精度）
+function normalizeCoordinate(coord: number): number {
+  return Math.round(coord * 1000) / 1000;
+}
+
 /**
  * 通过坐标获取详细地址（逆地理编码）
  * @param longitude 经度（数字或字符串）
@@ -51,10 +56,14 @@ export async function getAddressByCoordinate(longitude: number | string, latitud
   const rawLat = typeof latitude === 'number' ? latitude : parseFloat(latitude);
   const [gcjLng, gcjLat] = wgs84ToGcj02(rawLat, rawLng);
 
-  // 使用转换后的坐标创建缓存键，确保一致性
-  const cacheKey = `${gcjLng},${gcjLat}`
+  // 标准化坐标精度以提高缓存命中率
+  const normalizedLng = normalizeCoordinate(gcjLng);
+  const normalizedLat = normalizeCoordinate(gcjLat);
 
-  // 检查缓存
+  // 使用标准化后的坐标创建缓存键，确保一致性
+  const cacheKey = `${normalizedLng},${normalizedLat}`
+
+  // 检查内存缓存
   if (addressCache.has(cacheKey)) {
     return addressCache.get(cacheKey)!
   }
@@ -123,7 +132,7 @@ export async function getAddressByCoordinate(longitude: number | string, latitud
 
       const finalAddress = address || '未知位置'
 
-      // 缓存结果
+      // 缓存结果到内存
       addressCache.set(cacheKey, finalAddress)
 
       return finalAddress
@@ -236,185 +245,32 @@ function simplifyAmapAddress(formattedAddress: string, addressComponent?: any): 
 }
 
 /** 
- * 批量获取地址（对于行程列表优化）
- * 使用高德地图批量API进行查询，提高性能
+ * 批量获取地址（使用并行单个查询替代批量API）
  * @param coordinates 坐标数组 [{longitude, latitude}]
  * @returns 地址数组
  */
 export async function getAddressesByCoordinatesBatch(
   coordinates: Array<{ longitude: number | string; latitude: number | string }>
 ): Promise<string[]> {
-  if (!AMAP_KEY) {
-    console.warn('NEXT_PUBLIC_AMAP_KEY 未配置，无法使用高德地图地址查询')
-    return coordinates.map(() => '未知位置')
-  }
-
   if (coordinates.length === 0) {
     return []
   }
 
-  // 为每个坐标创建缓存键并检查缓存
-  const cacheKeys: string[] = []
-  const uncachedCoords: Array<{ 
-    index: number; 
-    longitude: number | string; 
-    latitude: number | string;
-    gcjLng: number;
-    gcjLat: number;
-  }> = []
-
-  coordinates.forEach((coord, index) => {
-    // 验证坐标有效性
-    const lng = typeof coord.longitude === 'number' ? coord.longitude : parseFloat(coord.longitude);
-    const lat = typeof coord.latitude === 'number' ? coord.latitude : parseFloat(coord.latitude);
-
-    if (isNaN(lng) || isNaN(lat) || !isFinite(lng) || !isFinite(lat)) {
-      return // Skip invalid coordinates, will be handled later
-    }
-
-    // 转换坐标系：WGS84 -> GCJ-02（高德地图需要GCJ-02坐标）
-    const [gcjLng, gcjLat] = wgs84ToGcj02(lat, lng);
-    
-    // 创建缓存键，使用转换后的坐标确保一致性
-    const cacheKey = `${gcjLng},${gcjLat}`
-    cacheKeys[index] = cacheKey
-
-    // 检查缓存
-    if (!addressCache.has(cacheKey)) {
-      uncachedCoords.push({
-        index,
-        longitude: coord.longitude,
-        latitude: coord.latitude,
-        gcjLng,
-        gcjLat
-      })
-    }
-  })
-
-  // 初始化结果数组
-  const results: string[] = new Array(coordinates.length)
-
-  // 填充缓存的结果
-  coordinates.forEach((_, index) => {
-    const cacheKey = cacheKeys[index]
-    if (cacheKey && addressCache.has(cacheKey)) {
-      results[index] = addressCache.get(cacheKey)!
-    } else {
-      results[index] = '未知位置' // 占位符，稍后会被实际结果替换
-    }
-  })
-
-  // 如果所有坐标都已缓存，直接返回
-  if (uncachedCoords.length === 0) {
-    return results
-  }
-
+  // 使用Promise.all并行执行单个查询，利用缓存机制
   try {
-    // 构建批量请求的location参数
-    const locations = uncachedCoords.map(coord => `${coord.gcjLng},${coord.gcjLat}`).join('|');
-    
-    // 构建批量请求URL
-    const url = `https://restapi.amap.com/v3/geocode/regeo?key=${AMAP_KEY}&location=${locations}&radius=1000&extensions=all&batch=true&roadlevel=1`;
-
-    // 添加调试日志
-    console.log('批量逆地理编码请求:', {
-      url,
-      coordinatesCount: uncachedCoords.length
-    });
-
-    // 发送批量请求
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'User-Agent': 'Tesla-Dashboard/1.0'
+    const promises = coordinates.map(async (coord) => {
+      try {
+        return await getAddressByCoordinate(coord.longitude, coord.latitude);
+      } catch (error) {
+        console.error('单个地址查询失败:', error);
+        return '未知位置';
       }
     });
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-
-    const data = await response.json();
-
-    // 添加响应日志
-    console.log('批量逆地理编码响应:', {
-      status: data.status,
-      count: data.regeocodes ? data.regeocodes.length : 0
-    });
-
-    if (data.status === '1' && data.regeocodes && Array.isArray(data.regeocodes)) {
-      // 处理批量响应结果
-      data.regeocodes.forEach((regeocode: any, i: number) => {
-        const coord = uncachedCoords[i];
-        if (coord && regeocode) {
-          let address = '未知位置';
-
-          // 优先使用POI信息（小区名/建筑名/饭店/酒店等）
-          if (regeocode.pois && regeocode.pois.length > 0) {
-            // 选择最相关的POI，通常第一个是最相关的
-            const relevantPoi = regeocode.pois[0];
-            address = relevantPoi.name;
-          }
-          // 如果没有POI信息，则使用格式化地址
-          else if (regeocode.formatted_address) {
-            address = simplifyAmapAddress(regeocode.formatted_address, regeocode.addressComponent);
-          }
-          // 最后使用手动构建的地址
-          else if (regeocode.addressComponent) {
-            // 手动构建地址
-            const parts = [
-              regeocode.addressComponent.city,
-              regeocode.addressComponent.district,
-              regeocode.addressComponent.township,
-              regeocode.addressComponent.street
-            ].filter(part => part && part !== '[]');
-
-            address = parts.join('');
-          }
-
-          const finalAddress = address || '未知位置';
-
-          // 缓存结果
-          addressCache.set(`${coord.gcjLng},${coord.gcjLat}`, finalAddress);
-
-          // 填充结果数组
-          results[coord.index] = finalAddress;
-        }
-      });
-
-      return results;
-    } else {
-      console.warn('高德地图批量API返回错误:', data.info);
-      throw new Error(`高德地图批量API返回错误: ${data.info}`);
-    }
+    const results = await Promise.all(promises);
+    return results;
   } catch (error) {
     console.error('批量地址查询失败:', error);
-    // 如果批量查询失败，回退到并行查询方式
-    try {
-      const promises = uncachedCoords.map(async (coord) => {
-        try {
-          const address = await getAddressByCoordinate(coord.longitude, coord.latitude);
-          return { index: coord.index, address };
-        } catch (error) {
-          console.error('单个地址查询失败:', error);
-          return { index: coord.index, address: '未知位置' };
-        }
-      });
-
-      const addressResults = await Promise.all(promises);
-      
-      addressResults.forEach(({ index, address }) => {
-        results[index] = address;
-      });
-
-      return results;
-    } catch (fallbackError) {
-      console.error('回退查询也失败:', fallbackError);
-      // 如果发生错误，将所有未缓存的结果设为未知位置
-      uncachedCoords.forEach(coord => {
-        results[coord.index] = '未知位置';
-      });
-      return results;
-    }
+    return coordinates.map(() => '未知位置');
   }
 } 

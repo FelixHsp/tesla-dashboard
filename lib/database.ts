@@ -1,5 +1,5 @@
 import { Pool, PoolClient } from 'pg'
-import { getAddressesByCoordinatesBatch } from './amap'
+import { getAddressesWithCache } from './address-cache'
 import { simplifyAddress } from './utils'
 import { wgs84ToGcj02 } from './coordinate-transform'
 
@@ -82,6 +82,230 @@ export interface PaginatedTrips {
   trips: Trip[]
   hasMore: boolean
   total: number
+}
+
+// 坐标地址缓存数据类型
+export interface CoordinateAddress {
+  id: number
+  longitude: number
+  latitude: number
+  address: string
+  created_at: Date
+  updated_at: Date
+}
+
+// 驾驶评分缓存数据类型
+export interface TripDrivingScore {
+  id: number
+  trip_id: number
+  overall_score: number
+  acceleration_score: number
+  braking_score: number
+  smoothness_score: number
+  efficiency_score: number
+  hard_accelerations: number
+  hard_brakings: number
+  rapid_speed_changes: number
+  avg_speed_variation: number
+  power_efficiency: number
+  data_points: number
+  created_at: Date
+  updated_at: Date
+}
+
+// 创建坐标地址缓存表
+export async function createCoordinateAddressesTable(): Promise<void> {
+  if (process.env.SKIP_DB_CONNECTION === 'true') {
+    return;
+  }
+
+  const client = await pool.connect()
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS coordinate_addresses (
+        id SERIAL PRIMARY KEY,
+        longitude DECIMAL(10, 7) NOT NULL,
+        latitude DECIMAL(10, 7) NOT NULL,
+        address VARCHAR(500) NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        UNIQUE(longitude, latitude)
+      )
+    `);
+
+    // 添加联合索引以提高查询效率
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_coordinate_addresses_coords 
+      ON coordinate_addresses (longitude, latitude)
+    `);
+
+    console.log('坐标地址缓存表创建成功');
+  } catch (error) {
+    console.error('创建坐标地址缓存表失败:', error);
+    throw error;
+  } finally {
+    client.release()
+  }
+}
+
+// 创建驾驶评分缓存表
+export async function createTripScoresTable(): Promise<void> {
+  if (process.env.SKIP_DB_CONNECTION === 'true') {
+    return;
+  }
+
+  const client = await pool.connect()
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS trip_driving_scores (
+        id SERIAL PRIMARY KEY,
+        trip_id INTEGER NOT NULL,
+        overall_score DECIMAL(5, 2) NOT NULL,
+        acceleration_score DECIMAL(5, 2) NOT NULL,
+        braking_score DECIMAL(5, 2) NOT NULL,
+        smoothness_score DECIMAL(5, 2) NOT NULL,
+        efficiency_score DECIMAL(5, 2) NOT NULL,
+        hard_accelerations INTEGER NOT NULL DEFAULT 0,
+        hard_brakings INTEGER NOT NULL DEFAULT 0,
+        rapid_speed_changes INTEGER NOT NULL DEFAULT 0,
+        avg_speed_variation DECIMAL(8, 2) NOT NULL DEFAULT 0,
+        power_efficiency DECIMAL(8, 2) NOT NULL DEFAULT 0,
+        data_points INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        UNIQUE(trip_id)
+      )
+    `);
+
+    // 添加trip_id索引以提高查询效率
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_trip_driving_scores_trip_id 
+      ON trip_driving_scores (trip_id)
+    `);
+
+    console.log('驾驶评分缓存表创建成功');
+  } catch (error) {
+    console.error('创建驾驶评分缓存表失败:', error);
+    throw error;
+  } finally {
+    client.release()
+  }
+}
+
+// 获取缓存的地址信息
+export async function getCachedAddress(longitude: number, latitude: number): Promise<string | null> {
+  if (process.env.SKIP_DB_CONNECTION === 'true') {
+    return null;
+  }
+
+  const client = await pool.connect()
+  try {
+    const result = await client.query(
+      'SELECT address FROM coordinate_addresses WHERE longitude = $1 AND latitude = $2',
+      [longitude, latitude]
+    );
+    return result.rows[0]?.address || null;
+  } catch (error) {
+    console.error('查询缓存地址失败:', error);
+    return null;
+  } finally {
+    client.release()
+  }
+}
+
+// 缓存地址信息
+export async function cacheAddress(longitude: number, latitude: number, address: string): Promise<void> {
+  if (process.env.SKIP_DB_CONNECTION === 'true') {
+    return;
+  }
+
+  const client = await pool.connect()
+  try {
+    await client.query(`
+      INSERT INTO coordinate_addresses (longitude, latitude, address, updated_at)
+      VALUES ($1, $2, $3, NOW())
+      ON CONFLICT (longitude, latitude)
+      DO UPDATE SET address = EXCLUDED.address, updated_at = NOW()
+    `, [longitude, latitude, address]);
+  } catch (error) {
+    console.error('缓存地址失败:', error);
+    // 不抛出错误，因为缓存失败不应该影响主功能
+  } finally {
+    client.release()
+  }
+}
+
+// 获取缓存的驾驶评分
+export async function getCachedTripScore(tripId: number): Promise<TripDrivingScore | null> {
+  if (process.env.SKIP_DB_CONNECTION === 'true') {
+    return null;
+  }
+
+  const client = await pool.connect()
+  try {
+    const result = await client.query(
+      'SELECT * FROM trip_driving_scores WHERE trip_id = $1',
+      [tripId]
+    );
+    return result.rows[0] || null;
+  } catch (error) {
+    console.error('查询缓存评分失败:', error);
+    return null;
+  } finally {
+    client.release()
+  }
+}
+
+// 缓存驾驶评分信息
+export async function cacheTripScore(tripId: number, score: any, dataPoints: number): Promise<void> {
+  if (process.env.SKIP_DB_CONNECTION === 'true') {
+    return;
+  }
+
+  const client = await pool.connect()
+  try {
+    await client.query(`
+      INSERT INTO trip_driving_scores (
+        trip_id, overall_score, acceleration_score, braking_score, 
+        smoothness_score, efficiency_score, hard_accelerations, 
+        hard_brakings, rapid_speed_changes, avg_speed_variation, 
+        power_efficiency, data_points, updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+      ON CONFLICT (trip_id)
+      DO UPDATE SET
+        overall_score = EXCLUDED.overall_score,
+        acceleration_score = EXCLUDED.acceleration_score,
+        braking_score = EXCLUDED.braking_score,
+        smoothness_score = EXCLUDED.smoothness_score,
+        efficiency_score = EXCLUDED.efficiency_score,
+        hard_accelerations = EXCLUDED.hard_accelerations,
+        hard_brakings = EXCLUDED.hard_brakings,
+        rapid_speed_changes = EXCLUDED.rapid_speed_changes,
+        avg_speed_variation = EXCLUDED.avg_speed_variation,
+        power_efficiency = EXCLUDED.power_efficiency,
+        data_points = EXCLUDED.data_points,
+        updated_at = NOW()
+    `, [
+      tripId,
+      score.overall,
+      score.acceleration,
+      score.braking,
+      score.smoothness,
+      score.efficiency,
+      score.details.hardAccelerations,
+      score.details.hardBrakings,
+      score.details.rapidSpeedChanges,
+      score.details.avgSpeedVariation,
+      score.details.powerEfficiency,
+      dataPoints
+    ]);
+  } catch (error) {
+    console.error('缓存评分失败:', error);
+    // 不抛出错误，因为缓存失败不应该影响主功能
+  } finally {
+    client.release()
+  }
 }
 
 // 获取行程列表 (使用TeslaMate的drives表) - 保持原有功能
@@ -327,7 +551,7 @@ export async function getTripsPaginated(page: number = 1, limit: number = 10, ca
         
         // 批量获取地址
         if (coordinates.length > 0) {
-          const addresses = await getAddressesByCoordinatesBatch(coordinates)
+          const addresses = await getAddressesWithCache(coordinates)
           
           // 将地址分配回对应的行程
           addresses.forEach((address, index) => {

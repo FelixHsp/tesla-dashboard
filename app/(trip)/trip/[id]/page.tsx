@@ -23,7 +23,9 @@ import {
 } from 'lucide-react'
 import TripMap from '@/components/TripMap'
 import TripCharts from '@/components/TripCharts'
-import { formatDuration, calculateDistance, formatDateWithTimezone, generateTripTitle } from '@/lib/utils'
+import DrivingScoreCard from '@/components/DrivingScoreCard'
+import { formatDuration, calculateDistance, formatDateWithTimezone } from '@/lib/utils'
+import { generateTripTitle } from '@/lib/server-utils'
 
 // 安全的数字格式化函数
 function safeToFixed(value: any, digits: number = 1): string {
@@ -230,20 +232,23 @@ export default async function TripDetailPage({ params }: TripDetailPageProps) {
               )}
             </CardContent>
           </Card>
-
-          {/* 地图卡片 */}
-          <Card>
-            <CardHeader className="pb-4">
-              <CardTitle className="text-lg" style={{ fontFamily: 'AlibabaPuHuiTi, sans-serif' }}>行驶轨迹</CardTitle>
-              <CardDescription className="text-sm">基于GPS数据的行驶路线</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="h-64 md:h-96 rounded-lg overflow-hidden">
-                <TripMap positions={positions} />
-              </div>
-            </CardContent>
-          </Card>
         </div>
+
+        {/* 驾驶评分卡片 */}
+        <DrivingScoreCard tripId={tripId} />
+
+        {/* 地图卡片 */}
+        <Card>
+          <CardHeader className="pb-4">
+            <CardTitle className="text-lg" style={{ fontFamily: 'AlibabaPuHuiTi, sans-serif' }}>行驶轨迹</CardTitle>
+            <CardDescription className="text-sm">基于GPS数据的行驶路线</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="h-64 md:h-96 rounded-lg overflow-hidden">
+              <TripMap positions={positions} />
+            </div>
+          </CardContent>
+        </Card>
 
         {/* 数据分析标签页 */}
         {positions.length > 0 && (
