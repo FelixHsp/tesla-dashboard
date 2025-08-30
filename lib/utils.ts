@@ -1,6 +1,6 @@
 import { type ClassValue, clsx } from "clsx"
 import { twMerge } from "tailwind-merge"
-import { getAddressByCoordinate } from './amap'
+// Note: getAddressByCoordinate 仅用于客户端，服务端应使用 address-cache.ts 中的函数
 import { wgs84ToGcj02 } from './coordinate-transform'
  
 export function cn(...inputs: ClassValue[]) {
@@ -62,64 +62,6 @@ export function simplifyAddress(address: string | null): string {
   return simplified || '未知位置'
 }
 
-// 使用坐标获取详细地址，失败时回退到数据库地址
-export async function getEnhancedAddress(
-  databaseAddress: string | null,
-  longitude: number | null,
-  latitude: number | null
-): Promise<string> {
-  // 如果有坐标，尝试使用高德API获取详细地址
-  if (longitude && latitude) {
-    try {
-      // 直接传入原始坐标，getAddressByCoordinate函数会处理坐标转换
-      const detailedAddress = await getAddressByCoordinate(longitude, latitude);
-      if (detailedAddress && detailedAddress !== '未知位置') {
-        return detailedAddress;
-      }
-    } catch (error) {
-      console.warn('获取详细地址失败，使用数据库地址:', error);
-    }
-  }
-  
-  // 回退到数据库地址
-  return simplifyAddress(databaseAddress);
-}
-
-// 生成行程摘要标题 - 支持异步地址获取
-export async function generateTripTitle(
-  startAddress: string | null,
-  endAddress: string | null,
-  startLongitude?: number | null | undefined,
-  startLatitude?: number | null | undefined,
-  endLongitude?: number | null | undefined,
-  endLatitude?: number | null | undefined
-): Promise<string> {
-  try {
-    // 转换可能为undefined的值为null
-    const startLng = startLongitude ?? null
-    const startLat = startLatitude ?? null
-    const endLng = endLongitude ?? null
-    const endLat = endLatitude ?? null
-    
-    // 并行获取起始和结束地址
-    const [enhancedStartAddress, enhancedEndAddress] = await Promise.all([
-      getEnhancedAddress(startAddress, startLng, startLat),
-      getEnhancedAddress(endAddress, endLng, endLat)
-    ])
-    
-    if (enhancedStartAddress === '未知位置' && enhancedEndAddress === '未知位置') {
-      return '未知行程'
-    }
-    
-    return `${enhancedStartAddress} → ${enhancedEndAddress}`
-  } catch (error) {
-    console.error('生成行程标题失败:', error)
-    // 发生错误时回退到简单地址处理
-    const start = simplifyAddress(startAddress)
-    const end = simplifyAddress(endAddress)
-    return `${start} → ${end}`
-  }
-}
 
 // 同步版本的生成行程标题（用于不支持异步的场景）
 export function generateTripTitleSync(startAddress: string | null, endAddress: string | null): string {
